@@ -3,6 +3,7 @@ const fs = require('fs')
 const express = require('express')
 const multer = require('multer')
 const Post = require('../models/Post')
+const auth = require('../middleware/auth')
 
 const router = express.Router()
 
@@ -31,10 +32,10 @@ const upload = multer({
   },
 })
 
-// GET /api/posts -> lista de posts (más recientes primero)
-router.get('/', async (req, res) => {
+// GET /api/posts -> lista de mis posts (más recientes primero)
+router.get('/', auth, async (req, res) => {
   try {
-    const posts = await Post.find().sort({ createdAt: -1 })
+    const posts = await Post.find({ userId: req.user.id }).sort({ createdAt: -1 })
     res.json(posts)
   } catch (error) {
     console.error(error)
@@ -43,7 +44,7 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/posts -> crear post nuevo con imagen
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/', auth, upload.single('image'), async (req, res) => {
   try {
     const { title, description } = req.body
 
@@ -56,6 +57,7 @@ router.post('/', upload.single('image'), async (req, res) => {
     const imageUrl = `/uploads/${req.file.filename}`
 
     const post = await Post.create({
+      userId: req.user.id,
       title,
       description,
       imageUrl,
@@ -69,7 +71,7 @@ router.post('/', upload.single('image'), async (req, res) => {
 })
 
 // DELETE /api/posts/:id -> eliminar post y su imagen asociada
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params
 
@@ -77,6 +79,10 @@ router.delete('/:id', async (req, res) => {
 
     if (!post) {
       return res.status(404).json({ message: 'Publicación no encontrada' })
+    }
+
+    if (post.userId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'No tienes permiso para eliminar esta publicación' })
     }
 
     // Borrar archivo de imagen si existe
