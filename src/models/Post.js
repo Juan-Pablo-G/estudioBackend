@@ -8,6 +8,12 @@ const postSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Por defecto la publicación es privada; el usuario puede marcarla como pública.
+    isPublic: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     title: {
       type: String,
       required: true,

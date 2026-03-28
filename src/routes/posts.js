@@ -43,10 +43,23 @@ router.get('/', auth, async (req, res) => {
   }
 })
 
+// GET /api/posts/public -> feed público (no requiere autenticación)
+router.get('/public', async (req, res) => {
+  try {
+    const posts = await Post.find({ isPublic: true }).sort({ createdAt: -1 })
+    res.json(posts)
+  } catch (error) {
+    console.error(error)
+    res.status(500).json({ message: 'Error al obtener el feed público' })
+  }
+})
+
 // POST /api/posts -> crear post nuevo con imagen
 router.post('/', auth, upload.single('image'), async (req, res) => {
   try {
     const { title, description } = req.body
+    const isPublic =
+      req.body.isPublic === 'true' || req.body.isPublic === '1' || req.body.isPublic === 1
 
     if (!title || !req.file) {
       return res
@@ -61,6 +74,7 @@ router.post('/', auth, upload.single('image'), async (req, res) => {
       title,
       description,
       imageUrl,
+      isPublic,
     })
 
     res.status(201).json(post)
