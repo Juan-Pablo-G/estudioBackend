@@ -4,8 +4,16 @@ const mongoose = require('mongoose')
 const cors = require('cors')
 const morgan = require('morgan')
 const dotenv = require('dotenv')
+const cloudinary = require('cloudinary').v2
 
 dotenv.config()
+
+// Configurar Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+})
 
 const postsRouter = require('./src/routes/posts')
 const authRouter = require('./src/routes/auth')
@@ -22,8 +30,8 @@ app.use(cors({ origin: '*' }))
 app.use(express.json())
 app.use(morgan('dev'))
 
-// Archivos estáticos de imágenes subidas
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
+// Archivos estáticos de imágenes subidas (remover si no se necesita)
+// app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
 
 // Rutas API
 app.use('/api/auth', authRouter)

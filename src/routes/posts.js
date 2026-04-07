@@ -1,29 +1,13 @@
-const path = require('path')
-const fs = require('fs')
 const express = require('express')
 const multer = require('multer')
+const cloudinary = require('cloudinary').v2
 const Post = require('../models/Post')
 const auth = require('../middleware/auth')
 
 const router = express.Router()
 
-// Configuración de Multer para guardar imágenes en /uploads
-const uploadsDir = path.join(__dirname, '..', '..', 'uploads')
-
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true })
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir)
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9)
-    const ext = path.extname(file.originalname)
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`)
-  },
-})
+// Configuración de Multer para memoria (para subir a Cloudinary)
+const storage = multer.memoryStorage()
 
 const upload = multer({
   storage,
@@ -67,13 +51,27 @@ router.post('/', auth, upload.single('image'), async (req, res) => {
         .json({ message: 'El título y la imagen son obligatorios' })
     }
 
-    const imageUrl = `/uploads/${req.file.filename}`
+    // Subir imagen a Cloudinary
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'posts' },
+        (error, result) => {
+          if (error) reject(error)
+          else resolve(result)
+        }
+      )
+      stream.end(req.file.buffer)
+    })
+
+    const imageUrl = result.secure_url
+    const imagePublicId = result.public_id
 
     const post = await Post.create({
       userId: req.user.id,
       title,
       description,
       imageUrl,
+      imagePublicId,
       isPublic,
     })
 
@@ -84,7 +82,7 @@ router.post('/', auth, upload.single('image'), async (req, res) => {
   }
 })
 
-// DELETE /api/posts/:id -> eliminar post y su imagen asociada
+// DELETE /api/posts/:id -> eliminar post
 router.delete('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params
@@ -99,18 +97,13 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'No tienes permiso para eliminar esta publicación' })
     }
 
-    // Borrar archivo de imagen si existe
-    if (post.imageUrl) {
-      const filePath = path.join(
-        uploadsDir,
-        path.basename(post.imageUrl),
-      )
-
-      fs.unlink(filePath, (err) => {
-        if (err && err.code !== 'ENOENT') {
-          console.error('Error al borrar la imagen:', err)
-        }
-      })
+    // Borrar la imagen en Cloudinary si tenemos el public_id
+    if (post.imagePublicId) {
+      try {
+        await cloudinary.uploader.destroy(post.imagePublicId)
+      } catch (cloudError) {
+        console.error('Error al borrar la imagen en Cloudinary:', cloudError)
+      }
     }
 
     await post.deleteOne()
