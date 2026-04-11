@@ -115,5 +115,61 @@ router.delete('/:id', auth, async (req, res) => {
   }
 })
 
+// PATCH /api/posts/:id -> editar post propio
+router.patch('/:id', auth, upload.single('image'), async (req, res) => {
+  try {
+    const { id } = req.params
+    const { title, description } = req.body
+    const post = await Post.findById(id)
+
+    if (!post) {
+      return res.status(404).json({ message: 'Publicación no encontrada' })
+    }
+
+    if (post.userId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'No tienes permiso para editar esta publicación' })
+    }
+
+    const isPublic = req.body.isPublic == null
+      ? post.isPublic
+      : req.body.isPublic === 'true' || req.body.isPublic === '1' || req.body.isPublic === 1
+
+    if (typeof title !== 'undefined') post.title = title
+    if (typeof description !== 'undefined') post.description = description
+    post.isPublic = isPublic
+
+    if (req.file) {
+      // Subir nueva imagen a Cloudinary
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'posts' },
+          (error, result) => {
+            if (error) reject(error)
+            else resolve(result)
+          }
+        )
+        stream.end(req.file.buffer)
+      })
+
+      if (post.imagePublicId) {
+        try {
+          await cloudinary.uploader.destroy(post.imagePublicId)
+        } catch (cloudError) {
+          console.error('Error al borrar la imagen anterior en Cloudinary:', cloudError)
+        }
+      }
+
+      post.imageUrl = result.secure_url
+      post.imagePublicId = result.public_id
+    }
+
+    await post.save()
+    res.json(post)
+  } catch (error) {
+    console.error(error)
+    res.status(500).json({ message: 'Error al actualizar el post' })
+  }
+})
+
 module.exports = router
 
