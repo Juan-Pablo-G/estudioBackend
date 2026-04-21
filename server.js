@@ -1,14 +1,12 @@
-const path = require('path')
 const express = require('express')
-const mongoose = require('mongoose')
 const cors = require('cors')
 const morgan = require('morgan')
 const dotenv = require('dotenv')
 const cloudinary = require('cloudinary').v2
+const { initializeDatabase } = require('./src/db')
 
 dotenv.config()
 
-// Configurar Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -21,8 +19,6 @@ const authRouter = require('./src/routes/auth')
 const app = express()
 
 const PORT = process.env.PORT || 4000
-const MONGODB_URI =
-  process.env.MONGODB_URI
 const JWT_SECRET = process.env.JWT_SECRET
 
 // Middlewares
@@ -38,20 +34,18 @@ app.use('/api/auth', authRouter)
 app.use('/api/posts', postsRouter)
 
 // Conexión a MongoDB y arranque del servidor
-mongoose
-  .connect(MONGODB_URI)
+initializeDatabase()
   .then(() => {
     if (!JWT_SECRET) {
       console.error('Falta JWT_SECRET en .env')
       process.exit(1)
     }
-    console.log('Conectado a MongoDB')
+    console.log('Conectado a PostgreSQL')
     app.listen(PORT, () => {
       console.log(`Servidor escuchando en http://localhost:${PORT}`)
     })
   })
   .catch((err) => {
-    console.error('Error al conectar a MongoDB', err)
+    console.error('Error al conectar a PostgreSQL', err)
     process.exit(1)
   })
-
