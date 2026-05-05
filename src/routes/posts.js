@@ -153,7 +153,7 @@ router.post('/:id/like', auth, async (req, res) => {
       didCreateLike = true
     }
 
-    if (didCreateLike && String(post.user_id) !== String(req.user.id)) {
+    if (didCreateLike) {
       try {
         await notifyPostOwnerAboutLike({
           ownerEmail: post.owner_email,
