@@ -2,11 +2,13 @@ const express = require('express')
 const multer = require('multer')
 const cloudinary = require('cloudinary').v2
 const auth = require('../middleware/auth')
+const { optionalAuth } = require('../middleware/auth')
 const { query } = require('../db')
+const { notifyPostOwnerAboutLike } = require('../services/likeNotifications')
 
 const router = express.Router()
 
-// Configuración de Multer para memoria (para subir a Cloudinary)
+// Configuracion de Multer para memoria (para subir a Cloudinary)
 const storage = multer.memoryStorage()
 
 const upload = multer({
@@ -27,10 +29,24 @@ function mapPost(row) {
     imagePublicId: row.image_public_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    likesCount: Number(row.likes_count || 0),
+    likedByMe: Boolean(row.liked_by_me),
   }
 }
 
-// GET /api/posts -> lista de mis posts (más recientes primero)
+function inferDisplayNameFromEmail(email) {
+  if (!email) return 'Alguien'
+
+  const [localPart] = String(email).split('@')
+  if (!localPart) return 'Alguien'
+
+  return localPart
+    .replace(/[._-]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+// GET /api/posts -> lista de mis posts (mas recientes primero)
 router.get('/', auth, async (req, res) => {
   try {
     const result = await query(
@@ -49,21 +65,125 @@ router.get('/', auth, async (req, res) => {
   }
 })
 
-// GET /api/posts/public -> feed público (no requiere autenticación)
-router.get('/public', async (req, res) => {
+// GET /api/posts/public -> feed publico (no requiere autenticacion)
+router.get('/public', optionalAuth, async (req, res) => {
   try {
+    const currentUserId = req.user?.id ? Number(req.user.id) : null
     const result = await query(
       `
-        SELECT *
+        SELECT
+          posts.*,
+          COUNT(post_likes.id)::INT AS likes_count,
+          COALESCE(BOOL_OR(post_likes.user_id = $1), FALSE) AS liked_by_me
         FROM posts
+        LEFT JOIN post_likes ON post_likes.post_id = posts.id
         WHERE is_public = TRUE
+        GROUP BY posts.id
         ORDER BY created_at DESC
       `,
+      [currentUserId],
     )
     res.json(result.rows.map(mapPost))
   } catch (error) {
     console.error(error)
-    res.status(500).json({ message: 'Error al obtener el feed público' })
+    res.status(500).json({ message: 'Error al obtener el feed publico' })
+  }
+})
+
+// POST /api/posts/:id/like -> dar o quitar like a un post publico
+router.post('/:id/like', auth, async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const postResult = await query(
+      `
+        SELECT
+          posts.id,
+          posts.user_id,
+          posts.title,
+          posts.description,
+          owners.email AS owner_email,
+          likers.email AS liker_email
+        FROM posts
+        INNER JOIN users AS owners ON owners.id = posts.user_id
+        INNER JOIN users AS likers ON likers.id = $2
+        WHERE posts.id = $1 AND posts.is_public = TRUE
+        LIMIT 1
+      `,
+      [id, req.user.id],
+    )
+
+    const post = postResult.rows[0]
+
+    if (!post) {
+      return res.status(404).json({ message: 'Publicacion publica no encontrada' })
+    }
+
+    const existingLikeResult = await query(
+      `
+        SELECT id
+        FROM post_likes
+        WHERE post_id = $1 AND user_id = $2
+        LIMIT 1
+      `,
+      [id, req.user.id],
+    )
+
+    let likedByMe = false
+    let didCreateLike = false
+
+    if (existingLikeResult.rows[0]) {
+      await query(
+        `
+          DELETE FROM post_likes
+          WHERE post_id = $1 AND user_id = $2
+        `,
+        [id, req.user.id],
+      )
+    } else {
+      await query(
+        `
+          INSERT INTO post_likes (post_id, user_id)
+          VALUES ($1, $2)
+          ON CONFLICT (post_id, user_id) DO NOTHING
+        `,
+        [id, req.user.id],
+      )
+      likedByMe = true
+      didCreateLike = true
+    }
+
+    if (didCreateLike && String(post.user_id) !== String(req.user.id)) {
+      try {
+        await notifyPostOwnerAboutLike({
+          ownerEmail: post.owner_email,
+          ownerName: inferDisplayNameFromEmail(post.owner_email),
+          likerName: inferDisplayNameFromEmail(post.liker_email),
+          postTitle: post.title,
+          postDescription: post.description,
+        })
+      } catch (notificationError) {
+        console.error('Error al enviar la notificacion de like por MailerSend:', notificationError)
+      }
+    }
+
+    const likesResult = await query(
+      `
+        SELECT COUNT(*)::INT AS likes_count
+        FROM post_likes
+        WHERE post_id = $1
+      `,
+      [id],
+    )
+
+    res.json({
+      _id: String(id),
+      likesCount: Number(likesResult.rows[0]?.likes_count || 0),
+      likedByMe,
+    })
+  } catch (error) {
+    console.error(error)
+    res.status(500).json({ message: 'Error al actualizar el like' })
   }
 })
 
@@ -75,20 +195,15 @@ router.post('/', auth, upload.single('image'), async (req, res) => {
       req.body.isPublic === 'true' || req.body.isPublic === '1' || req.body.isPublic === 1
 
     if (!title || !req.file) {
-      return res
-        .status(400)
-        .json({ message: 'El título y la imagen son obligatorios' })
+      return res.status(400).json({ message: 'El titulo y la imagen son obligatorios' })
     }
 
     // Subir imagen a Cloudinary
     const result = await new Promise((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        { folder: 'posts' },
-        (error, result) => {
-          if (error) reject(error)
-          else resolve(result)
-        }
-      )
+      const stream = cloudinary.uploader.upload_stream({ folder: 'posts' }, (error, uploadResult) => {
+        if (error) reject(error)
+        else resolve(uploadResult)
+      })
       stream.end(req.file.buffer)
     })
 
@@ -124,11 +239,11 @@ router.delete('/:id', auth, async (req, res) => {
     const post = postResult.rows[0]
 
     if (!post) {
-      return res.status(404).json({ message: 'Publicación no encontrada' })
+      return res.status(404).json({ message: 'Publicacion no encontrada' })
     }
 
     if (String(post.user_id) !== req.user.id) {
-      return res.status(403).json({ message: 'No tienes permiso para eliminar esta publicación' })
+      return res.status(403).json({ message: 'No tienes permiso para eliminar esta publicacion' })
     }
 
     // Borrar la imagen en Cloudinary si tenemos el public_id
@@ -142,10 +257,10 @@ router.delete('/:id', auth, async (req, res) => {
 
     await query('DELETE FROM posts WHERE id = $1', [id])
 
-    res.json({ message: 'Publicación eliminada correctamente' })
+    res.json({ message: 'Publicacion eliminada correctamente' })
   } catch (error) {
     console.error(error)
-    res.status(500).json({ message: 'Error al eliminar la publicación' })
+    res.status(500).json({ message: 'Error al eliminar la publicacion' })
   }
 })
 
@@ -158,29 +273,28 @@ router.patch('/:id', auth, upload.single('image'), async (req, res) => {
     const post = postResult.rows[0]
 
     if (!post) {
-      return res.status(404).json({ message: 'Publicación no encontrada' })
+      return res.status(404).json({ message: 'Publicacion no encontrada' })
     }
 
     if (String(post.user_id) !== req.user.id) {
-      return res.status(403).json({ message: 'No tienes permiso para editar esta publicación' })
+      return res.status(403).json({ message: 'No tienes permiso para editar esta publicacion' })
     }
 
-    const isPublic = req.body.isPublic == null
-      ? post.is_public
-      : req.body.isPublic === 'true' || req.body.isPublic === '1' || req.body.isPublic === 1
+    const isPublic =
+      req.body.isPublic == null
+        ? post.is_public
+        : req.body.isPublic === 'true' || req.body.isPublic === '1' || req.body.isPublic === 1
+
     let nextImageUrl = post.image_url
     let nextImagePublicId = post.image_public_id
 
     if (req.file) {
       // Subir nueva imagen a Cloudinary
       const result = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: 'posts' },
-          (error, result) => {
-            if (error) reject(error)
-            else resolve(result)
-          }
-        )
+        const stream = cloudinary.uploader.upload_stream({ folder: 'posts' }, (error, uploadResult) => {
+          if (error) reject(error)
+          else resolve(uploadResult)
+        })
         stream.end(req.file.buffer)
       })
 
@@ -195,6 +309,7 @@ router.patch('/:id', auth, upload.single('image'), async (req, res) => {
       nextImageUrl = result.secure_url
       nextImagePublicId = result.public_id
     }
+
     const updatedResult = await query(
       `
         UPDATE posts
